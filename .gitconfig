@@ -1,0 +1,3 @@
+[remote "all"]
+	url = git@github.com:yevfast/ws2812.git
+	url = git@gitlab.com:yevfast/ws2812.git
