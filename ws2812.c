@@ -2,6 +2,8 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/gpio.h>
+#include <linux/delay.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Yevhen Fastiuk");
@@ -16,6 +18,31 @@ static struct device* dev = NULL;
 
 static int dev_open(struct inode *inode, struct file *file)
 {
+// FIXME: Temp. For testing purposes. 
+#define GPIO_PIN 18
+	int res;
+
+	res = gpio_request(GPIO_PIN, DEV_NAME);
+	if (res) {
+		return -EFAULT;
+	}
+
+	res = gpio_direction_output(GPIO_PIN, 0);
+	if (res) {
+		return -EFAULT;
+	}
+
+	gpio_set_value(GPIO_PIN, 1);
+	udelay(1000000);
+	gpio_set_value(GPIO_PIN, 0);
+	udelay(1000000);
+	gpio_set_value(GPIO_PIN, 1);
+	udelay(500000);
+	gpio_set_value(GPIO_PIN, 0);
+	udelay(500000);
+
+	gpio_free(GPIO_PIN);
+	
 	return 0;
 }
 
