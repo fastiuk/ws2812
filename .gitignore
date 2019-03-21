@@ -1,0 +1,13 @@
+# QtCreator project files
+qtc-*
+
+# Build files
+.tmp_versions/
+*.ko.cmd
+*.mod.o.cmd
+*.o.cmd
+Module.symvers
+modules.order
+*.ko
+*.mod.c
+*.o
