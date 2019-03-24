@@ -17,20 +17,15 @@ MODULE_DESCRIPTION("Kernel module for using WS2812 LED");
 
 #define GPIO_SET_VALUE_DELTA	130
 
-#define TRESET_US	80
+#define TRESET_US	60
 #define T0H_NS		(400 - GPIO_SET_VALUE_DELTA)
 #define T0L_NS		(850 - GPIO_SET_VALUE_DELTA)
 #define T1H_NS		(800 - GPIO_SET_VALUE_DELTA)
 #define T1L_NS		(450 - GPIO_SET_VALUE_DELTA)
 
-static int major_num;
-static struct class* class = NULL;
-static struct device* dev = NULL;
-
-// FIXME: Temp. For testing purposes.
+// FIXME: Hardcoded for now. Will be changed in the future
 #define GPIO_PIN 18
 #define LED_COUNT 3
-#define FRAMES 3
 
 /* High precision nanodelay */
 #define hpr_set(timer, delay) \
@@ -40,89 +35,75 @@ static struct device* dev = NULL;
 #define hpr_wait(timer) \
 	while (ktime_get_ns() < timer);
 
-static const uint8_t pixel_frames_arr[] = {
-	255, 0, 0,
-	0, 255, 0,
-	0, 0, 255,
+static int major_num;
+static struct class* class;
+static struct device* dev;
+static uint8_t usercount;
+static uint8_t led_data[LED_COUNT * 3];
 
-	0, 0, 255,
-	255, 0, 0,
-	0, 255, 0,
-
-	0, 255, 0,
-	0, 0, 255,
-	255, 0, 0,
-};
-// ENDFIX
-
-static int dev_open(struct inode *inode, struct file *file)
+static void led_sync(void)
 {
-// FIXME: Temp. For testing purposes. 
-	int res;
 	uint8_t mask = 0;
-	DEFINE_SPINLOCK(led_slock);
-	uint32_t led_slock_flags;
+	DEFINE_SPINLOCK(spin_lock);
+	uint32_t spin_lock_flags;
 	uint64_t hpr_timer;
 
-	res = gpio_request(GPIO_PIN, DEV_NAME);
-	if (res) {
-		return -EFAULT;
-	}
-
-	res = gpio_direction_output(GPIO_PIN, 0);
-	if (res) {
-		return -EFAULT;
-	}
-
 	/* GPIO speed workaround */
-	spin_lock_irqsave(&led_slock, led_slock_flags);
+	spin_lock_irqsave(&spin_lock, spin_lock_flags);
 	for (int i = 0; i < 1000000; ++i) {
 		gpio_set_value(GPIO_PIN, 0);
 	}
-	spin_unlock_irqrestore(&led_slock, led_slock_flags);
+	spin_unlock_irqrestore(&spin_lock, spin_lock_flags);
 
-	for (int i = 0; i < FRAMES; ++i) {
-		/* Sending 3 bytes per LED */
-		spin_lock_irqsave(&led_slock, led_slock_flags);
-		for (int j = 0; j < LED_COUNT * 3; ++j) {
-			mask = 1;
-			for (int k = 0; k < 8; ++k) {
-				if (pixel_frames_arr[(i * LED_COUNT * 3) + j] & mask) {
-					hpr_set(hpr_timer, T1H_NS);
-					gpio_set_value(GPIO_PIN, 1);
-					hpr_wait(hpr_timer);
+	/* Sending 3 bytes per LED */
+	spin_lock_irqsave(&spin_lock, spin_lock_flags);
+	for (int i = 0; i < sizeof(led_data); ++i) {
+		mask = 1;
+		for (int j = 0; j < 8; ++j) {
+			if (led_data[i] & mask) {
+				hpr_set(hpr_timer, T1H_NS);
+				gpio_set_value(GPIO_PIN, 1);
+				hpr_wait(hpr_timer);
 
-					hpr_set(t, T1L_NS);
-					gpio_set_value(GPIO_PIN, 0);
-					hpr_wait(hpr_timer);
-				} else {
-					hpr_set(hpr_timer, T0H_NS);
-					gpio_set_value(GPIO_PIN, 1);
-					hpr_wait(hpr_timer);
+				hpr_set(hpr_timer, T1L_NS);
+				gpio_set_value(GPIO_PIN, 0);
+				hpr_wait(hpr_timer);
+			} else {
+				hpr_set(hpr_timer, T0H_NS);
+				gpio_set_value(GPIO_PIN, 1);
+				hpr_wait(hpr_timer);
 
-					hpr_set(t, T0L_NS);
-					gpio_set_value(GPIO_PIN, 0);
-					hpr_wait(hpr_timer);
-				}
-				mask <<= 1;
+				hpr_set(hpr_timer, T0L_NS);
+				gpio_set_value(GPIO_PIN, 0);
+				hpr_wait(hpr_timer);
 			}
+			mask <<= 1;
 		}
-		spin_unlock_irqrestore(&led_slock, led_slock_flags);
+	}
+	spin_unlock_irqrestore(&spin_lock, spin_lock_flags);
 
-		/* Wait Treset time before sending new sequence */
-		udelay(TRESET_US);
-		mdelay(1000);
-	}	
-// ENDFIX
-	
+	/* Wait Treset time before sending new sequence */
+	udelay(TRESET_US);
+}
+
+static int dev_open(struct inode *inode, struct file *file)
+{
+	// FIXME: Temp. To avoid working on synchronization
+	if (usercount) {
+		return -EFAULT;
+	}
+
+	++usercount;
 	return 0;
 }
 
 static int dev_release(struct inode *inode, struct file *file)
 {
 // FIXME: Temp. For testing purposes.
-	gpio_free(GPIO_PIN);
+	led_sync();
 // ENDFIX
+
+	--usercount;
 	return 0;
 }
 
@@ -130,10 +111,15 @@ static ssize_t dev_read(struct file *file, char * buff, size_t len, loff_t *off)
 {
 	int ret;
 
-	// TODO: Check size of buff
-	ret = copy_to_user(buff, pixel_frames_arr, sizeof(pixel_frames_arr));
-	if (!ret) {
+	if (*off >= sizeof(led_data)) {
 		return 0;
+	}
+
+	// TODO: Check size of buff
+	ret = copy_to_user(buff, led_data, sizeof(led_data));
+	if (!ret) {
+		*off += sizeof(led_data);
+		return sizeof(led_data);
 	} else {
 		return -EFAULT;
 	}
@@ -143,6 +129,21 @@ static ssize_t dev_read(struct file *file, char * buff, size_t len, loff_t *off)
 
 static ssize_t dev_write(struct file *file, const char *buff, size_t len, loff_t *off)
 {
+	int ret;
+
+	if (*off >= sizeof(led_data)) {
+		return 0;
+	}
+
+	// TODO: Check size of buff
+	ret = copy_from_user(led_data, sizeof(led_data), buff);
+	if (!ret) {
+		*off += sizeof(led_data);
+		return sizeof(led_data);
+	} else {
+		return -EFAULT;
+	}
+
 	return 0;
 }
 
@@ -155,6 +156,8 @@ static struct file_operations fops = {
 
 static int __init mod_init(void)
 {
+	int res;
+
 	major_num = register_chrdev(0, DEV_NAME, &fops);
 	if (major_num < 0) {
 		printk(KERN_ALERT DEV_NAME ": chrdev register failed\n");
@@ -176,6 +179,16 @@ static int __init mod_init(void)
 		return -EFAULT;
 	}
 
+	res = gpio_request(GPIO_PIN, DEV_NAME);
+	if (res) {
+		return -EFAULT;
+	}
+
+	res = gpio_direction_output(GPIO_PIN, 0);
+	if (res) {
+		return -EFAULT;
+	}
+
 	printk(KERN_INFO DEV_NAME ": init done\n");
 	return 0;
 }
@@ -186,6 +199,8 @@ static void __exit mod_exit(void)
 	class_unregister(class);
 	class_destroy(class);
 	unregister_chrdev(major_num, DEV_NAME);
+
+	gpio_free(GPIO_PIN);
 	printk(KERN_INFO DEV_NAME ": deinit done\n");
 }
 
